@@ -13,18 +13,19 @@ from src.parse_rob_datasets import parse_dataset
 flags.DEFINE_boolean('debug', False, 'Whether to run training in debug mode')
 flags.DEFINE_boolean('profiler', False, 'Whether to run a profiler training run')
 flags.DEFINE_boolean('load_model', False, 'Load model last checkpoint (if available)')
+flags.DEFINE_boolean('test_only', False, 'Only test (i.e., not train) model.')
 flags.DEFINE_integer('batch_size', 4, 'Batch size')
 flags.DEFINE_integer('batch_accum', 4, 'Gradient accumulation steps')
-flags.DEFINE_integer('num_epochs', 10, 'Number of epochs to train')
+flags.DEFINE_integer('num_epochs', 15, 'Number of epochs to train')
 flags.DEFINE_integer('num_workers', 0, 'Number of workers for dataloader')
 flags.DEFINE_integer('num_frames_train', 10, 'Number of frames before backpropagation')
 flags.DEFINE_integer('num_frames_valid', 50, 'Number of frames in validation sequences')
 flags.DEFINE_integer('num_versions', 1, 'Number of versions to train for each model')
-flags.DEFINE_string('logs_dir', 'logs', 'Path to logs directory (e.g., for checkpoints)')
+flags.DEFINE_string('logs_dir', '/mnt/d/DL/logs', 'Path to logs directory (e.g., for checkpoints)')
 flags.DEFINE_string('data_dir', '/mnt/d/DL/datasets/nrp', 'Path to main data directory')
 flags.DEFINE_string('data_type', 'rob', 'Type of dataset used')  # 'rob', 'no_rob'
 flags.DEFINE_string('scheduler_type', 'onecycle', 'Scheduler used to update learning rate')
-flags.DEFINE_float('lr', 1e-2, 'Learning rate')
+flags.DEFINE_float('lr', 1e-3, 'Learning rate')
 flags.DEFINE_integer('n_layers', 4, 'Number of layers in the model')
 flags.DEFINE_string('rnn_type', 'hgru', 'Type of the recurrent cells used')
 flags.DEFINE_boolean('axon_delay', True, 'Whether to use axonal delays or not')
@@ -136,10 +137,6 @@ class PLPredNet(pl.LightningModule):
                 self.lr_schedulers().step()
         return {'loss': loss}
     
-    def test_step(self, batch, batch_idx):
-        # TODO: SQM-test
-        pass
-    
     def training_step_end(self, outputs):
         ''' Instructions run at the end of every training epoch
             
@@ -169,7 +166,7 @@ class PLPredNet(pl.LightningModule):
         '''
         I_seq, S_seq_true = batch['samples'], batch['labels']
         E_seq, P_seq, S_seq = self.forward(batch['samples'])
-        loss = self.loss_fn(E_seq, S_seq, S_seq_true, val_flag=True)
+        loss = self.loss_fn(E_seq, S_seq, S_seq_true, split_flag='val')
         sequences = None
         if batch_idx == 0:
             sequences = {'P_seq': torch.stack(P_seq, dim=-1).cpu(),
@@ -189,6 +186,56 @@ class PLPredNet(pl.LightningModule):
 
         '''
         self.log('valid_loss', outputs[0]['loss'].cpu().clip(max=10.0))
+        sequences = outputs[0]['sequences']
+        writer = self.logger.experiment
+        writer.add_video(tag='valid_reconstruction',
+                         vid_tensor=plot_recons(**sequences),
+                         global_step=self.global_step,
+                         fps=12)
+    
+    def test_step(self, batch, batch_idx):
+        ''' Testing step of the model
+            
+        Args:
+        -----
+        batch: dict
+            Dictionary containing the batch data
+        batch_idx: int
+            Index of the batch being processed
+
+        Returns:
+        --------
+        dict:
+            Dictionary containing the loss and prediction
+
+        '''
+        I_seq, S_seq_true = batch['samples'], batch['labels']
+        E_seq, P_seq, S_seq = self.forward(batch['samples'])
+        loss = self.loss_fn(E_seq, S_seq, S_seq_true, split_flag='test').cpu()
+        sequences = None
+        if batch_idx == 0:
+            sequences = {'P_seq': torch.stack(P_seq, dim=-1).cpu(),
+                         'P_seq_true': I_seq.cpu(),
+                         'S_seq': torch.stack(S_seq, dim=-1).cpu(),
+                         'S_seq_true': S_seq_true.cpu()}
+            self.batches_so_far = 0
+            self.loss_fun = torch.tensor(0.0)
+        self.batches_so_far += 1
+        self.loss_fun += loss
+        mean_loss = self.loss_fun / self.batches_so_far
+        return {'loss': loss, 'mean_loss': mean_loss, 'sequences': sequences}
+    
+    def test_epoch_end(self, outputs):
+        ''' Instructions run at the end of every testing epoch
+            Log test loss and plot prediction sequence as a gif
+            
+        Args:
+        -----
+        outputs: list of dict
+            List of dictionaries containing the loss and prediction
+
+        '''
+        self.log('mean_loss', outputs[0]['mean_loss'])
         sequences = outputs[0]['sequences']
         writer = self.logger.experiment
         writer.add_video(tag='valid_reconstruction',
@@ -234,8 +281,7 @@ class PLPredNet(pl.LightningModule):
     
     def test_dataloader(self):
         ''' Test dataloader '''
-        # TODO: use the SQM-dataloader function
-        pass
+        return self.dataloader(mode='test')
         
     def configure_optimizers(self):
         ''' Define the optimizer and the learning rate scheduler '''
@@ -317,7 +363,7 @@ def train_one_net(model_version):
     model_name = f'Prednet_L-{FLAGS.n_layers}_R-{FLAGS.rnn_type}'\
                + f'_A-{FLAGS.axon_delay}_P-{FLAGS.pred_loss}'
     model = PLPredNet(device)
-    trainer = pl.Trainer(num_sanity_val_steps=2,
+    trainer = pl.Trainer(num_sanity_val_steps=0,
                          default_root_dir=FLAGS.logs_dir,
                          gpus=(1 if device=='cuda' else 0),
                          max_epochs=FLAGS.num_epochs,
@@ -330,7 +376,9 @@ def train_one_net(model_version):
                              name=model_name,
                              version=model_version))
     ckpt_path = generate_ckpt_path(model_name, model_version)
-    trainer.fit(model, ckpt_path=ckpt_path)
+    if not FLAGS.test_only:
+        trainer.fit(model, ckpt_path=ckpt_path)
+    trainer.test(model, ckpt_path=ckpt_path)
 
 
 def main(_):

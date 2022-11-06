@@ -199,11 +199,11 @@ def rob_dl(mode, data_dir, batch_size, num_frames, num_classes,
     Parameters
     ----------
     mode : str
-        Whether to load the training or validation set.
+        Whether to load the training / validation / testing set.
     data_dir : str
         Path to the dataset.
     batch_size : int
-        Batch size used in the training / validation set.
+        Batch size used in the training / validation / testing set.
     num_frames : int
         Number of frames to use for each sample sequence.
     num_classes : int
@@ -220,7 +220,7 @@ def rob_dl(mode, data_dir, batch_size, num_frames, num_classes,
     Returns
     -------
     dataloader : torch.utils.data.DataLoader
-        Dataloader for the training or validation set.
+        Dataloader for the training / validation / testing set.
         
     '''
     
@@ -230,6 +230,8 @@ def rob_dl(mode, data_dir, batch_size, num_frames, num_classes,
     if mode == 'train':
         sample_subdir = sample_subdir[:int(len(sample_subdir) * tr_ratio)]
     elif mode == 'valid':
+        sample_subdir = sample_subdir[int(len(sample_subdir) * tr_ratio):]
+    elif mode == 'test':  # for now...
         sample_subdir = sample_subdir[int(len(sample_subdir) * tr_ratio):]
     augmentation = (mode == 'train')
     shuffle = (mode == 'train')

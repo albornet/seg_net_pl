@@ -147,7 +147,7 @@ foc_loss_fn = FocalLoss(alpha=0.5, gamma=2.0, reduction='mean')  # FocalTverskyL
 dic_loss_fn = DiceLoss()
 
 
-def loss_fn(E_seq, S_seq, S_seq_true, pred_flag=True, val_flag=False):
+def loss_fn(E_seq, S_seq, S_seq_true, pred_flag=True, split_flag='train'):
     ''' Compute loss for a batch of sequences 
     
     Args:
@@ -168,14 +168,16 @@ def loss_fn(E_seq, S_seq, S_seq_true, pred_flag=True, val_flag=False):
         # Segmentation prediction loss (supervised)
         seg_loss = dic_loss_fn(S, S_true)  # + foc_loss_fn(S, S_true)
 
-        # Do not account for prediction error in validation mode
-        if pred_flag and not val_flag:
+        # Account for prediction error only in training mode
+        if pred_flag and not split_flag == 'train':
             frame_loss = seg_loss + pred_loss
         else:
             frame_loss = seg_loss  # (seg_loss if seg_loss > 0 else 0.0)
         
         # Weight loss differently for each frame
-        if (val_flag and t > 5) or (not val_flag and t > 0):
+        if (split_flag == 'test' and t > 20) \
+        or (split_flag == 'val' and t > 5) \
+        or (split_flag == 'train' and t > 0):
             total_loss = total_loss + frame_loss * time_weight[t]
 
     return total_loss / n_frames
